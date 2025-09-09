@@ -1,0 +1,22 @@
+{
+  "name": "taskflow-tests",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test:e2e": "playwright test -c playwright.config.ts",
+    "test:e2e:headed": "playwright test -c playwright.config.ts --headed",
+    "test:e2e:ui": "playwright test -c playwright.config.ts --ui",
+    "test:api": "playwright test -c playwright.api.config.ts",
+    "report:e2e": "playwright show-report reports/e2e-html",
+    "report:api": "playwright show-report reports/api-html"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.46.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.14.9",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "js-yaml": "^4.1.0",
+    "typescript": "^5.5.3"
+  }
+}
