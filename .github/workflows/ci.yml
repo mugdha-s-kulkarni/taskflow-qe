@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract-tests:
+    name: API contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            app/backend/package-lock.json
+            tests/package-lock.json
+
+      - name: Install backend deps
+        working-directory: app/backend
+        run: npm ci
+
+      - name: Install test deps
+        working-directory: tests
+        run: npm ci
+
+      # No browser install here — the contract suite only uses Playwright's
+      # request fixture, so this job never pays for a Chromium download.
+      - name: Run contract tests
+        working-directory: tests
+        run: npm run test:api
+
+      - name: Upload contract test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-report
+          path: |
+            tests/reports/api-html
+            tests/reports/api-results.json
+          retention-days: 14
+
+  e2e-tests:
+    name: Playwright E2E tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            app/backend/package-lock.json
+            app/frontend/package-lock.json
+            tests/package-lock.json
+
+      - name: Install backend deps
+        working-directory: app/backend
+        run: npm ci
+
+      - name: Install frontend deps
+        working-directory: app/frontend
+        run: npm ci
+
+      - name: Install test deps
+        working-directory: tests
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: tests
+        run: npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        working-directory: tests
+        run: npm run test:e2e
+
+      - name: Upload E2E test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: |
+            tests/reports/e2e-html
+            tests/reports/e2e-results.json
+          retention-days: 14
+
+  load-tests:
+    name: k6 load tests
+    runs-on: ubuntu-latest
+    needs: contract-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/backend/package-lock.json
+
+      - name: Install backend deps
+        working-directory: app/backend
+        run: npm ci
+
+      - name: Start backend
+        working-directory: app/backend
+        run: |
+          NODE_ENV=test PORT=4000 npx tsx src/index.ts &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4000/health && break
+            sleep 1
+          done
+
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Run k6 smoke test
+        working-directory: tests/load/k6
+        run: k6 run smoke.js
+
+      - name: Run k6 tasks-list load test
+        working-directory: tests/load/k6
+        run: k6 run load-tasks-list.js
+
+      - name: Run k6 task-creation load test
+        working-directory: tests/load/k6
+        run: k6 run load-task-creation.js
+
+      - name: Upload k6 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-report
+          path: tests/load/k6/results
+          retention-days: 14
+
+  dashboard:
+    name: Publish results dashboard
+    runs-on: ubuntu-latest
+    needs: [e2e-tests, contract-tests, load-tests]
+    if: always() && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download contract report
+        uses: actions/download-artifact@v4
+        with:
+          name: contract-report
+          path: tests/reports
+        continue-on-error: true
+
+      - name: Download E2E report
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-report
+          path: tests/reports
+        continue-on-error: true
+
+      - name: Download k6 report
+        uses: actions/download-artifact@v4
+        with:
+          name: k6-report
+          path: tests/load/k6/results
+        continue-on-error: true
+
+      - name: Build dashboard
+        run: node .github/scripts/build-dashboard.js
+
+      - name: Publish to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: dashboard/dist
